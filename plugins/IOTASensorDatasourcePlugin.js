@@ -1,8 +1,24 @@
 (function () {
 
+    const TRYTE_CHARS = '9ABCDEFGHIJKLMNOPQRSTUVWXYZ';         // All legal tryte3 characters
+    const POWEROF3 = [1, 3, 9, 27, 3 * 27, 9 * 27, 27 * 27];   // Pre calculated 3^i
+
+
+    const encodingMap_Buffer = {
+        'utf8': 'utf8',
+        'utf16': 'utf16le',
+        'ansi': 'latin1',
+    };
+
+    const TRYTE_BOM = {
+        'YZ': 'utf16le',
+        'ZY': 'utf16be',
+        'YY': 'utf8',
+    }
+
     var TYPE_INFO = {
         type: "iota-sensor-datasource",
-        name: "IOTA Sensor Datasource",
+        name: "IOTA Sensors",
         description: "Fetches sensor data from the IOTA tangle",
         settings: [
             {
@@ -17,50 +33,85 @@
                 id: "host",
                 name: "IOTA Host Server",
                 description: "IOTA Light Node Host",
-                defaultValue: "",
+                defaultValue: "https://nodes.thetangle.org",
                 type: "string"
             },
             {
                 id: "port",
                 name: "IOTA Host Server Port",
                 description: "IOTA Light Node Port",
-                defaultValue: 0,
+                defaultValue: 443,
                 type: "number"
             }
         ]
     };
 
-    function safeParseJsonObject(string) {
-        try {
-            return JSON.parse(string);
-        }
-        catch (e) {
-            console.error("Was not able to parse JSON: " + string);
-            return {}
-        }
+    function decodeTextFromBytes(bytes, encoding) {
+        // IF NodeJS:
+        //let text = Buffer.from(bytes).toString(encoding);
+        // IF browser
+        let tmp = new Uint8Array(bytes);
+        var decoder = new TextDecoder(encoding);
+        let text = decoder.decode(tmp);
+
+        return text;
     }
 
-    function base64ToHex(str) {
-        for (var i = 0, bin = atob(str.replace(/[ \r\n]+$/, "")), hex = []; i < bin.length; ++i) {
-            var tmp = bin.charCodeAt(i).toString(16);
-            if (tmp.length === 1) tmp = "0" + tmp;
-            hex[hex.length] = tmp;
+    function decodeBytesFromTryteString(inputTrytes) {
+        // If input is not a string, return null
+        if (typeof inputTrytes !== 'string') return null
+
+        // If input length is odd, return null
+        if (inputTrytes.length % 2) return null
+
+        let bytes = [];
+
+        for (var i = 0; i < inputTrytes.length; i += 2) {
+            // get a trytes pair
+            var trytes = inputTrytes[i] + inputTrytes[i + 1];
+
+            var firstValue = TRYTE_CHARS.indexOf(trytes[0]);
+            var secondValue = TRYTE_CHARS.indexOf(trytes[1]);
+
+            var value = firstValue + secondValue * 27;
+            bytes.push(value);
         }
-        return hex;
+
+        return bytes;
+    }
+
+    function decodeTextFromTryteString(tryte3Str, encoding) {
+        // Check if BOM exists
+        let bom = tryte3Str.toString().substr(0, 2);
+        if (bom in TRYTE_BOM) {
+            // Remove bom from tryte string
+            tryte3Str = tryte3Str.toString().substr(2);
+
+            // FIXME: What should take precedence? Given encoding argument, or given BOM in data?
+            if (typeof encoding === 'undefined') {
+                encoding = TRYTE_BOM[bom];
+            }
+        }
+        if (typeof encoding === 'undefined') {
+            // If no BOM is found, decode as it it was a one byte characterset
+            encoding = 'latin1';
+        }
+
+        let bytes = decodeBytesFromTryteString(tryte3Str);
+        let text = decodeTextFromBytes(bytes, encoding);
+        return text;
     }
 
     function payloadToTrytes(payload, settings) {
 
-        var trytes = [];
+        var messages = [];
 
-        payload.forEach(function (hash) {
+        _.forEach(payload, function (hash) {
 
             var command = {
                 'command': 'getTrytes',
                 'hashes': [hash]
             }
-
-            console.log('tryes-cmd', command);
 
             var options = {
                 method: 'POST',
@@ -76,13 +127,14 @@
                     return response.json();
                 }).then(function (data) {
 
-                _.forEach(data, function (value) {
-                    console.log('trytes:', value)
-                    trytes.push(value);
+                _.forEach(data, function (value, i) {
+                    var message = decodeTextFromTryteString(value);
+                    var tmp = { 'id': i, 'message': message}
+                    messages.push(tmp);
                 })
             });
         })
-        return trytes;
+        return messages;
     }
 
     function fetchData() {
@@ -110,8 +162,9 @@
             }).then(function (data) {
 
             _.forEach(data, function (value) {
-                console.log('hashes:', value)
-                value.date = payloadToTrytes(value, settings);
+                var messages = payloadToTrytes(value, settings);
+                history.push(messages);
+                console.log(history);
                 self.history = history;
             })
 
